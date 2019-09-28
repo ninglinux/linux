@@ -1,0 +1,211 @@
+步骤一：部署web2和web3服务器
+
+1）安装LNP软件包
+
+    [root@web2 ~]# yum -y install gcc pcre-devel openssl-devel 
+    [root@web2 lnmp_soft]# tar -xf nginx-1.12.2.tar.gz
+    [root@web2 lnmp_soft]# cd nginx-1.12.2/
+    [root@web2 nginx-1.12.2]# ./configure \
+    --with-http_ssl_module \
+    --with-http_stub_status_module
+    [root@web2 nginx-1.12.2]# make && make instal
+    [root@web2 ~]# yum -y install php php-fpm php-mysql mariadb-devel
+    [root@web3 ~]# yum -y install gcc pcre-devel openssl-devel 
+    [root@web3 lnmp_soft]# tar -xf nginx-1.12.2.tar.gz
+    [root@web3 lnmp_soft]# cd nginx-1.12.2/
+    [root@web3 nginx-1.12.2]# ./configure \
+    --with-http_ssl_module \
+    --with-http_stub_status_module
+    [root@web3 nginx-1.12.2]# make && make instal
+    [root@web3 ~]# yum -y install php php-fpm php-mysql mariadb-devel
+
+2）修改nginx配置实现动静分离（web2和web3操作）
+
+web2修改默认首页index.php，配置两个location实现动静分离。
+
+    [root@web2 ~]# vim /usr/local/nginx/conf/nginx.conf
+    location / {
+                root   html;
+                index  index.php index.html index.htm;
+            }
+    location ~ \.php$ {
+                root            html;
+                fastcgi_pass   127.0.0.1:9000;
+                fastcgi_index  index.php;
+                include         fastcgi.conf;
+            }
+
+web3修改默认首页index.php，配置两个location实现动静分离。
+
+    [root@web3 ~]# vim /usr/local/nginx/conf/nginx.conf
+    location / {
+                root   html;
+                index  index.php index.html index.htm;
+            }
+    location ~ \.php$ {
+                root            html;
+                fastcgi_pass   127.0.0.1:9000;
+                fastcgi_index  index.php;
+                include         fastcgi.conf;
+            }
+
+3）启动相关服务
+
+    [root@web2 ~]# echo "/usr/local/nginx/sbin/nginx" >> /etc/rc.local
+    [root@web2 ~]# chmod +x /etc/rc.local
+    [root@web2 ~]# /usr/local/nginx/sbin/nginx
+    [root@web2 ~]# systemctl start  php-fpm                   #启动php-fpm服务
+    [root@web2 ~]# systemctl enable php-fpm
+    [root@web3 ~]# echo "/usr/local/nginx/sbin/nginx" >> /etc/rc.local
+    [root@web3 ~]# chmod +x /etc/rc.local
+    [root@web3 ~]# /usr/local/nginx/sbin/nginx
+    [root@web3 ~]# systemctl start  php-fpm                   #启动php-fpm服务
+    [root@web3 ~]# systemctl enable php-fpm
+
+附加知识：systemd！！！
+
+源码安装的软件默认无法使用systemd管理，如果需要使用systemd管理源码安装的软件需要手动编写服务的service文件（编写是可以参考其他服务的模板文件）。以下是nginx服务最终编辑好的模板。
+
+Service文件存储路径为/usr/lib/system/system/目录。
+
+    [root@centos7 ~]# vim /usr/lib/systemd/system/nginx.service
+    [Unit]
+    Description=The Nginx HTTP Server
+    #描述信息
+    After=network.target remote-fs.target nss-lookup.target
+    #指定启动nginx之前需要其他的其他服务，如network.target等
+    [Service]
+    Type=forking
+    #Type为服务的类型，仅启动一个主进程的服务为simple，需要启动若干子进程的服务为forking
+    ExecStart=/usr/local/nginx/sbin/nginx
+    #设置执行systemctl start nginx后需要启动的具体命令.
+    ExecReload=/usr/local/nginx/sbin/nginx -s reload
+    #设置执行systemctl reload nginx后需要执行的具体命令.
+    ExecStop=/bin/kill -s QUIT ${MAINPID}
+    #设置执行systemctl stop nginx后需要执行的具体命令.
+    [Install]
+    WantedBy=multi-user.target
+
+步骤二：部署NFS，将网站数据迁移至NFS共享服务器
+
+1）部署NFS共享服务器
+
+    [root@nfs ~]# yum install nfs-utils
+    [root@nfs ~]# mkdir /web_share
+    [root@nfs ~]# vim /etc/exports
+    /web_share  192.168.2.0/24(rw,no_root_squash)
+    [root@nfs ~]# systemctl restart rpcbind
+    [root@nfs ~]# systemctl eanble rpcbind
+
+NFS使用的是随机端口，每次启动NFS都需要将自己的随机端口注册到rpcbind服务，这样客户端访问NFS时先到rpcbind查询端口信息，得到端口信息后再访问NFS服务。
+
+    [root@nfs ~]# systemctl restart nfs
+    [root@nfs ~]# systemctl enable nfs
+
+2）迁移旧的网站数据到NFS共享服务器
+
+将web1（192.168.2.11）上的wordpress代码拷贝到NFS共享。
+
+    [root@web1 ~]# cd /usr/local/nginx/
+    [root@web1 nginx]# tar -czpf html.tar.gz html/
+    [root@web1 nginx]# scp html.tar.gz 192.168.2.31:/web_share/
+
+登陆nfs服务器，将压缩包解压
+
+    [root@nfs ~]# cd /web_share/
+    [root@nfs web_share]# tar -xf html.tar.gz
+
+3)所有web服务器访问挂载NFS共享数据。
+
+    [root@web1 ~]# rm -rf /usr/local/nginx/html/*
+    [root@web1 ~]# yum -y install nfs-utils
+    [root@web1 ~]# echo "192.168.2.31:/web_share/html /usr/local/nginx/html/ nfs defaults 0 0" >> /etc/fstab
+    [root@web1 ~]# mount -a
+    [root@web2 ~]# yum -y install nfs-utils
+    [root@web2 ~]# echo "192.168.2.31:/web_share/html /usr/local/nginx/html/ nfs defaults 0 0" >> /etc/fstab
+    [root@web2 ~]# mount -a
+    [root@web3 ~]# yum -y install nfs-utils
+    [root@web3 ~]# echo "192.168.2.31:/web_share/html /usr/local/nginx/html/ nfs defaults 0 0" >> /etc/fstab
+    [root@web3 ~]# mount -a
+
+步骤三：部署HAProxy代理服务器
+
+1）部署HAProxy
+
+安装软件，手动修改配置文件，添加如下内容。
+
+    [root@proxy ~]# yum -y install haproxy 
+    [root@proxy ~]# vim /etc/haproxy/haproxy.cfg
+    listen wordpress *:80
+      balance roundrobin
+      server web1 192.168.2.11:80 check inter 2000 rise 2 fall 3
+      server web2 192.168.2.12:80 check inter 2000 rise 2 fall 3
+      server web3 192.168.2.13:80 check inter 2000 rise 2 fall 3
+    [root@proxy ~]# systemctl start haproxy
+    [root@proxy ~]# systemctl enable haproxy
+
+步骤三：部署DNS域名服务器
+
+1）安装DNS相关软件（192.168.4.5操作）。
+
+     [root@proxy ~]# yum -y  install bind bind-chroot
+
+2）修改主配置文件，添加zone。
+
+    [root@proxy ~]# vim /etc/named.conf
+    options {
+            listen-on port 53 { any; };           #服务监听的地址与端口
+            directory       "/var/named";         #数据文件路径
+            allow-query     { any; };             #允许任何主机访问DNS服务
+    ... ...
+    };
+    zone "lab.com" IN {                        #定义正向区域
+            type master;
+            file "lab.com.zone";
+    };
+    #include "/etc/named.rfc1912.zones";        #注释掉改行
+    #include "/etc/named.root.key";              #注释掉改行
+    [root@proxy ~]# named-checkconf /etc/named.conf            #检查语法
+
+3）修改正向解析记录文件。
+
+注意：保留文件权限。
+
+    [root@proxy named]# cp -p /var/named/named.localhost /var/named/lab.com.zone
+    [root@proxy named]# vim /var/named/lab.zone
+    $TTL 1D
+    @       IN SOA  @ rname.invalid. (
+                                            0       ; serial
+                                            1D      ; refresh
+                                            1H      ; retry
+                                            1W      ; expire
+                                            3H )    ; minimum
+    @        NS     dns.lab.com.
+    dns     A       192.168.4.5
+    www     A       192.168.4.5
+
+4）启动服务
+
+    [root@proxy named]# systemctl start named
+    [root@proxy named]# systemctl enable named
+
+5）客户端修改DNS解析文件
+
+提示：做完实验修改回原始内容。
+
+    [root@room9pc01 data]# cat /etc/resolv.conf
+    # Generated by NetworkManager
+    search tedu.cn
+    nameserver 192.168.4.5
+    nameserver 172.40.1.10
+    nameserver 192.168.0.220
+
+步骤四：修改wordpress配置文件
+
+1）修改wp-config.php
+
+在define('DB_NAME', 'wordpress')这行前面添加如下两行内容：
+
+    [root@web3 html]# vim /usr/local/nginx/html/wp-config.php
+    define('WP_SITEURL', 'http://www.lab.com');
+    define('WP_HOME', 'http://www.lab.com');
